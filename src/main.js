@@ -1,4 +1,8 @@
 import { DoublePendulum } from "./physics/DoublePendulum.js";
+import { ChaosMetrics } from "./chaos/ChaosMetrics.js";
+import { ParticleField } from "./particles/ParticleField.js";
+import { interpolatePinkBlue } from "./render/color.js";
+import { deriveSymmetry, deriveInitialAngles } from "./core/Seed.js";
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -11,105 +15,95 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-const pendulum = new DoublePendulum({
-  m1: 1,
-  m2: 1,
-  L1: 1,
-  L2: 1,
-  g: 9.81,
-  theta1: Math.PI / 2,
-  theta2: Math.PI / 2 + 0.001, // わずかな非対称でカオス性を早く引き出す
-});
+// --- seed: 同じ値なら同じ構造が再現される。未指定ならその場で決まる一点もの ---
+const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+const { N: SYMMETRY, mirror: MIRROR } = deriveSymmetry(seed);
+const { theta1, theta2 } = deriveInitialAngles(seed);
 
-const SCALE = 150; // 1m = 150px
-const SUBSTEPS = 60; // 1フレームあたりの積分回数（体感速度と精度のバランス）
+const pendulum = new DoublePendulum({ m1: 1, m2: 1, L1: 1, L2: 1, g: 9.81, theta1, theta2 });
+const chaos = new ChaosMetrics(pendulum);
+const field = new ParticleField({ maxParticles: 1200 });
+
+const SCALE = 130; // 1m = 130px（field座標→画面座標）
+const SUBSTEPS = 60;
 const DT = 1 / 60 / SUBSTEPS;
-const MAX_TRAIL = 2000;
 
-const trail = [];
-const energy0 = pendulum.getEnergy();
+function spawnParticles(chaosIndex) {
+  const { x2, y2 } = pendulum.getPositions();
+  const { vx2, vy2 } = pendulum.getVelocities();
+  const color = interpolatePinkBlue(chaosIndex);
+  const count = 1 + Math.floor(chaosIndex * 4);
 
-function originX() {
-  return canvas.width / 2;
-}
-function originY() {
-  return canvas.height / 3;
+  for (let i = 0; i < count; i++) {
+    const jitter = 0.4 * chaosIndex;
+    const vx = vx2 * 0.25 + (Math.random() - 0.5) * jitter;
+    const vy = vy2 * 0.25 + (Math.random() - 0.5) * jitter;
+    const life = 1.5 + Math.random() * 2.5;
+    field.spawn(x2, y2, vx, vy, color, life);
+  }
 }
 
 function step() {
+  let chaosIndex = chaos.chaosIndex;
   for (let i = 0; i < SUBSTEPS; i++) {
     pendulum.step(DT);
+    chaosIndex = chaos.step(DT);
   }
-
-  const { x1, y1, x2, y2 } = pendulum.getPositions();
-  trail.push({ x: x2, y: y2 });
-  if (trail.length > MAX_TRAIL) trail.shift();
-
-  return { x1, y1, x2, y2 };
+  spawnParticles(chaosIndex);
+  field.update(1 / 60);
+  return chaosIndex;
 }
 
-function draw({ x1, y1, x2, y2 }) {
-  const ox = originX();
-  const oy = originY();
+function drawParticlesTransformed(cosA, sinA, flip) {
+  for (const p of field.particles) {
+    let x = p.x * SCALE;
+    const y = p.y * SCALE;
+    if (flip) x = -x;
+    const rx = x * cosA - y * sinA;
+    const ry = x * sinA + y * cosA;
 
-  ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
+    const lifeFrac = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(lifeFrac, 0) * 0.8;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(rx, ry, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw(chaosIndex) {
+  ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // trail (mass2の軌跡)
-  ctx.beginPath();
-  for (let i = 0; i < trail.length; i++) {
-    const px = ox + trail[i].x * SCALE;
-    const py = oy + trail[i].y * SCALE;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  for (let i = 0; i < SYMMETRY; i++) {
+    const angle = (i / SYMMETRY) * Math.PI * 2;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    drawParticlesTransformed(cosA, sinA, false);
+    if (MIRROR) drawParticlesTransformed(cosA, sinA, true);
   }
-  ctx.strokeStyle = "rgba(169, 214, 229, 0.35)"; // pale blue
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  const p1x = ox + x1 * SCALE;
-  const p1y = oy + y1 * SCALE;
-  const p2x = ox + x2 * SCALE;
-  const p2y = oy + y2 * SCALE;
-
-  // arms
-  ctx.beginPath();
-  ctx.moveTo(ox, oy);
-  ctx.lineTo(p1x, p1y);
-  ctx.lineTo(p2x, p2y);
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  // mass1 (pale pink)
-  ctx.beginPath();
-  ctx.arc(p1x, p1y, 6, 0, Math.PI * 2);
-  ctx.fillStyle = "#F7B8D0";
-  ctx.fill();
-
-  // mass2 (pale blue)
-  ctx.beginPath();
-  ctx.arc(p2x, p2y, 6, 0, Math.PI * 2);
-  ctx.fillStyle = "#A9D6E5";
-  ctx.fill();
+  ctx.restore();
 }
 
 let frame = 0;
 function loop() {
-  const positions = step();
-  draw(positions);
+  const chaosIndex = step();
+  draw(chaosIndex);
 
   frame++;
   if (frame % 15 === 0) {
-    const e = pendulum.getEnergy();
-    const drift = Math.abs(e - energy0);
-    hud.textContent = `energy=${e.toFixed(6)}  drift=${drift.toExponential(3)}  frame=${frame}`;
+    hud.textContent = `seed=${seed} N=${SYMMETRY} mirror=${MIRROR} chaosIndex=${chaosIndex.toFixed(3)} particles=${field.particles.length}`;
   }
 
   requestAnimationFrame(loop);
 }
 
-// 初回は黒で塗りつぶす
 ctx.fillStyle = "#000";
 ctx.fillRect(0, 0, canvas.width, canvas.height);
 

@@ -78,6 +78,17 @@ export class DoublePendulum {
     return { x1, y1, x2, y2 };
   }
 
+  // 質点1・質点2の速度ベクトル（位置の解析的な時間微分）
+  getVelocities() {
+    const [theta1, theta2, omega1, omega2] = this.state;
+    const { L1, L2 } = this;
+    const vx1 = L1 * Math.cos(theta1) * omega1;
+    const vy1 = -L1 * Math.sin(theta1) * omega1;
+    const vx2 = vx1 + L2 * Math.cos(theta2) * omega2;
+    const vy2 = vy1 - L2 * Math.sin(theta2) * omega2;
+    return { vx1, vy1, vx2, vy2 };
+  }
+
   // 全エネルギー（積分の妥当性検証用。理論上はほぼ一定に保たれる）
   getEnergy() {
     const [theta1, theta2, omega1, omega2] = this.state;
