@@ -27,9 +27,25 @@ export class VolumetricRenderer {
     );
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // モバイルのRetina画面(devicePixelRatio 3など)でフル解像度×Bloomの多重バッファを
+    // 使うとGPU負荷・メモリ消費が跳ね上がり、WebGLコンテキストロストの一因になるため抑える
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x000000, 1);
+
+    // WebGLコンテキストロスト対策：既定動作のままだと文脈が失われた瞬間に描画が
+    // 完全に止まってしまう。preventDefault()でブラウザ側の自動復帰を許可し、
+    // 復帰するまでの間はrender()を安全にスキップする
+    this.contextLost = false;
+    this.renderer.domElement.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      console.warn("WebGL context lost. Waiting for automatic restore...");
+    });
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => {
+      this.contextLost = false;
+      console.warn("WebGL context restored.");
+    });
 
     // パーティクル用バッファ（最大容量分を確保し、drawRangeで実使用数だけ描画）
     const capacity = this.maxParticles * this.copies;
@@ -51,6 +67,7 @@ export class VolumetricRenderer {
     });
 
     this.points = new THREE.Points(geometry, material);
+    this.points.frustumCulled = false; // 動的バッファのバウンディング計算に依存させない
     this.scene.add(this.points);
 
     this.composer = new EffectComposer(this.renderer);
@@ -134,7 +151,8 @@ export class VolumetricRenderer {
       const halfHeight = (maxY - minY) / 2;
       this.targetCenterY = (minY + maxY) / 2;
       // 球としての外接半径（水平方向と垂直方向、どちらが支配的でも収まるように）
-      this.targetFitRadius = Math.max(maxRadius, halfHeight, 0.5);
+      // 上限を設け、まれな外れ値1粒子でカメラが延々ズームアウトし続けないようにする
+      this.targetFitRadius = Math.min(Math.max(maxRadius, halfHeight, 0.5), 12);
     }
   }
 
@@ -153,6 +171,8 @@ export class VolumetricRenderer {
   }
 
   render(elapsed) {
+    if (this.contextLost) return; // 復帰待ちの間は描画呼び出し自体を行わない
+
     // バウンディング(中心Y・外接半径)を滑らかに追従させ、構造の実サイズに
     // 合わせてカメラを自動でズーム/センタリングする
     if (this.targetCenterY !== undefined) {
