@@ -17,6 +17,11 @@ export class VolumetricRenderer {
     this.maxParticles = maxParticles;
 
     this.scene = new THREE.Scene();
+    // 密度はrender()内でカメラ距離に応じて毎フレーム再計算する(基準値は参考値)。
+    // 固定値のままだとカメラが構造に合わせて遠ざかったとき(縦長画面で必要距離が
+    // 伸びる、構造が大きく広がる等)にFogExp2が指数的に効き、画面全体が
+    // 黒に収束して何も見えなくなる。
+    this.fogBase = 0.4;
     this.scene.fog = new THREE.FogExp2(0x000000, 0.045);
 
     this.camera = new THREE.PerspectiveCamera(
@@ -57,14 +62,16 @@ export class VolumetricRenderer {
     geometry.setAttribute("color", new THREE.BufferAttribute(this.colors, 3));
     geometry.setDrawRange(0, 0);
 
+    this.baseSize = 0.06; // 基準距離での見た目のサイズ。render()で距離に応じて補正する
     const material = new THREE.PointsMaterial({
-      size: 0.06,
+      size: this.baseSize,
       vertexColors: true,
       transparent: true,
       opacity: 0.7,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
+    this.material = material;
 
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false; // 動的バッファのバウンディング計算に依存させない
@@ -180,10 +187,22 @@ export class VolumetricRenderer {
       this.fitRadius += (this.targetFitRadius - this.fitRadius) * 0.03;
     }
 
-    const fovRad = (this.camera.fov * Math.PI) / 180;
-    const fitAspect = Math.min(this.camera.aspect, 1); // 縦長画面でも横幅が窮屈にならないように
+    // 縦・横それぞれのFOVで球が収まる距離を求め、大きい方(＝厳しい方の制約)を採用する。
+    // 以前は横幅を`sin(fov/2)*aspect`で割るだけの式で、スマホの縦長画面
+    // (aspect≈0.46)だと横方向の制約を過大評価してカメラが必要以上に遠ざかっていた。
     const margin = 1.6; // 構造の周囲に余白を持たせる係数
-    const distance = (this.fitRadius * margin) / (Math.sin(fovRad / 2) * fitAspect);
+    const vFov = (this.camera.fov * Math.PI) / 180;
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+    const distV = (this.fitRadius * margin) / Math.sin(vFov / 2);
+    const distH = (this.fitRadius * margin) / Math.sin(hFov / 2);
+    const distance = Math.max(distV, distH);
+
+    // Fogの密度をカメラ距離に反比例させ、どれだけズームアウトしても
+    // 構造が完全な黒に沈み込まないようにする(固定密度だと遠距離で指数的に効きすぎる)
+    this.scene.fog.density = this.fogBase / Math.max(distance, 1);
+
+    // 粒子サイズも距離に比例させ、ズームアウトしても画面上の見た目のサイズを保つ
+    this.material.size = this.baseSize * (distance / 9);
 
     // 自動周回 + わずかなマウス視差で「空間の中にいる」感覚を出す
     const orbitAngle = elapsed * 0.08;
