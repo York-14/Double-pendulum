@@ -37,7 +37,7 @@ function spawnParticles(chaosIndex) {
     const vx = vx2 * 0.25 + (Math.random() - 0.5) * jitter;
     const vy = vy2 * 0.25 + (Math.random() - 0.5) * jitter;
     // ω1（位相空間のうちx,yに現れない成分）を奥行きの初速に写像する
-    const vz = omega1 * 0.18 + (Math.random() - 0.5) * jitter;
+    const vz = omega1 * 0.06 + (Math.random() - 0.5) * jitter * 0.5;
     const life = 1.5 + Math.random() * 2.5;
     field.spawn(x2, y2, 0, vx, vy, vz, rgb, life);
   }

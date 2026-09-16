@@ -42,7 +42,7 @@ export class VolumetricRenderer {
     geometry.setDrawRange(0, 0);
 
     const material = new THREE.PointsMaterial({
-      size: 0.035,
+      size: 0.06,
       vertexColors: true,
       transparent: true,
       opacity: 0.7,
@@ -71,6 +71,11 @@ export class VolumetricRenderer {
     });
 
     window.addEventListener("resize", () => this.resize());
+
+    // 構造の実際の広がりに合わせてカメラを自動フィットさせるための状態
+    // （固定した距離/注視点だと、構造が小さい/大きいときに画面から外れたり埋もれたりする）
+    this.centerY = 0;
+    this.fitRadius = 3;
   }
 
   resize() {
@@ -87,11 +92,22 @@ export class VolumetricRenderer {
     const n = Math.min(particles.length, this.maxParticles);
     let idx = 0;
 
+    // 対称複製はY軸回転のみなので、軸からの距離(半径)とYの範囲さえ
+    // 複製前の生データから求めれば、複製後の外接範囲がそのままわかる
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let maxRadiusSq = 0;
+
     for (let i = 0; i < n; i++) {
       const p = particles[i];
       const wx = p.x * SCALE;
       const wy = -p.y * SCALE; // 振り子のyは下向き正 → Three.jsは上向き正
       const wz = p.z * SCALE;
+
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+      const radiusSq = wx * wx + wz * wz;
+      if (radiusSq > maxRadiusSq) maxRadiusSq = radiusSq;
 
       const lifeFrac = Math.max(0, 1 - p.age / p.life);
       const [r, g, b] = p.rgb;
@@ -112,6 +128,14 @@ export class VolumetricRenderer {
     this.points.geometry.setDrawRange(0, idx);
     this.points.geometry.attributes.position.needsUpdate = true;
     this.points.geometry.attributes.color.needsUpdate = true;
+
+    if (n > 0) {
+      const maxRadius = Math.sqrt(maxRadiusSq);
+      const halfHeight = (maxY - minY) / 2;
+      this.targetCenterY = (minY + maxY) / 2;
+      // 球としての外接半径（水平方向と垂直方向、どちらが支配的でも収まるように）
+      this.targetFitRadius = Math.max(maxRadius, halfHeight, 0.5);
+    }
   }
 
   writeVertex(vi, x, y, z, cosA, sinA, r, g, b, brightness) {
@@ -129,13 +153,25 @@ export class VolumetricRenderer {
   }
 
   render(elapsed) {
+    // バウンディング(中心Y・外接半径)を滑らかに追従させ、構造の実サイズに
+    // 合わせてカメラを自動でズーム/センタリングする
+    if (this.targetCenterY !== undefined) {
+      this.centerY += (this.targetCenterY - this.centerY) * 0.03;
+      this.fitRadius += (this.targetFitRadius - this.fitRadius) * 0.03;
+    }
+
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    const fitAspect = Math.min(this.camera.aspect, 1); // 縦長画面でも横幅が窮屈にならないように
+    const margin = 1.6; // 構造の周囲に余白を持たせる係数
+    const distance = (this.fitRadius * margin) / (Math.sin(fovRad / 2) * fitAspect);
+
     // 自動周回 + わずかなマウス視差で「空間の中にいる」感覚を出す
-    const radius = 5.5 + Math.sin(elapsed * 0.05) * 1;
     const orbitAngle = elapsed * 0.08;
-    this.camera.position.x = Math.sin(orbitAngle) * radius + this.mouse.x * 0.6;
-    this.camera.position.z = Math.cos(orbitAngle) * radius;
-    this.camera.position.y = 0.1 + Math.sin(elapsed * 0.07) * 0.4 - this.mouse.y * 0.6;
-    this.camera.lookAt(0, -0.9, 0);
+    const bob = Math.sin(elapsed * 0.07) * this.fitRadius * 0.08;
+    this.camera.position.x = Math.sin(orbitAngle) * distance + this.mouse.x * 0.6;
+    this.camera.position.z = Math.cos(orbitAngle) * distance;
+    this.camera.position.y = this.centerY + bob - this.mouse.y * 0.6;
+    this.camera.lookAt(0, this.centerY, 0);
 
     this.composer.render();
   }
